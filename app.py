@@ -332,7 +332,11 @@ a{color:var(--acc)}
       <h2>2. 选择版本（tag）与架构 <span class="dim" id="tRepo"></span></h2>
       <div class="row">
         <input type="text" id="tFilter" placeholder="按 tag 过滤，如 1.27 / alpine / stable" style="max-width:250px">
-        <select id="tOrder" style="width:190px"><option value="last_updated">按更新时间（新→旧）</option><option value="-last_updated">按更新时间（旧→新）</option><option value="name">按名字 A→Z</option></select>
+        <select id="tOrder" style="width:230px" onchange="loadTags(1)">
+          <option value="version_desc">按版本号（新→旧）· 别名置底</option>
+          <option value="last_updated">按更新时间（新→旧）</option>
+          <option value="-last_updated">按更新时间（旧→新）</option>
+          <option value="name">按名字 A→Z</option></select>
         <button onclick="loadTags(1)">刷新版本</button>
         <select id="tArch" onchange="renderTags()" style="width:150px"><option value="">显示全部架构</option><option value="amd64">只看 amd64</option><option value="arm64">只看 arm64</option><option value="arm">只看 arm/v7</option></select>
         <span class="dim" id="tMsg"></span>
@@ -427,13 +431,44 @@ function pickRepo(ref,keep){
   $$('#sRows tr').forEach(tr=>tr.classList.toggle('sel', tr.dataset.ref===ref));
   const box=document.querySelector('#tRows').closest('.scroll'); if(box) box.scrollTop=0;
 }
+const VRE=/^v?(\d+(?:\.\d+){1,3})(?![\d.])/;
+const aliasTag=n=>!VRE.test(n);
+const vkey=n=>{const m=n.match(VRE); if(!m) return -1; const p=m[1].split('.').map(Number);
+  while(p.length<3)p.push(0); return p[0]*1e6+p[1]*1e3+p[2]};
+function sortByVersion(list){
+  return list.slice().sort((a,b)=>{
+    const av=vkey(a.tag), bv=vkey(b.tag);
+    if((av<0)!==(bv<0)) return av<0?1:-1;       // 带版本号的在前，别名沉底
+    if(av!==bv) return bv-av;                    // 版本号从新到旧
+    return a.tag.localeCompare(b.tag);
+  });
+}
+
 async function loadTags(p){
   if(!SELREPO) return;
-  tPage=p; $('#tMsg').textContent='读取版本…';
-  const url=`/api/tags?repo=${encodeURIComponent(SELREPO)}&filter=${encodeURIComponent($('#tFilter').value.trim())}&page=${p}&ordering=${$('#tOrder').value}`;
-  try{ const d=await api(url); TAGS = p===1? d.results : TAGS.concat(d.results);
-    $('#tMsg').textContent=`共 ${d.count} 个 tag，已载入 ${TAGS.length}`;
-    $('#moreT').style.display = d.results.length ? '' : 'none';
+  tPage=p;
+  const ord=$('#tOrder').value, base=`/api/tags?repo=${encodeURIComponent(SELREPO)}&filter=${encodeURIComponent($('#tFilter').value.trim())}`;
+  try{
+    if(ord==='version_desc'){
+      // 默认视图：多抓几页，把带版本号的挑出来按版本倒序，别名（stable/latest/mainline…）沉到最后
+      $('#tMsg').textContent='读取版本（默认载入最近 3 页，按版本号排序）…';
+      TAGS=[]; let cnt=0;
+      for(let pg=1; pg<=3; pg++){
+        const d=await api(base+`&page=${pg}&ordering=last_updated`);
+        cnt=d.count; TAGS=TAGS.concat(d.results);
+        if(d.results.length<50) break;
+      }
+      const nAlias=TAGS.filter(t=>aliasTag(t.tag)).length;
+      TAGS=sortByVersion(TAGS);
+      $('#tMsg').textContent=`共 ${cnt} 个 tag · 已载入 ${TAGS.length} 个并按版本号排序（其中别名 ${nAlias} 个沉底）；要看更早的版本用左边过滤框，如 1.27`;
+      $('#moreT').style.display='none';
+    }else{
+      $('#tMsg').textContent='读取版本…';
+      const d=await api(base+`&page=${p}&ordering=${ord}`);
+      TAGS = p===1? d.results : TAGS.concat(d.results);
+      $('#tMsg').textContent=`共 ${d.count} 个 tag，已载入 ${TAGS.length}`;
+      $('#moreT').style.display = d.results.length ? '' : 'none';
+    }
     renderTags();
   }catch(e){$('#tRows').innerHTML=`<tr><td colspan="4" style="color:#f85149">${esc(e.message)}</td></tr>`; $('#tMsg').textContent='';}
 }
@@ -444,7 +479,7 @@ function renderTags(){
       `<span class="chip ${p.arch===CFG.arch&&(p.variant||'')===(CFG.variant||'')?'on':''}" title="${p.os}/${p.arch}${p.variant?'/'+p.variant:''}">${p.arch}${p.variant?'/'+p.variant:''} ${fmt(p.size)}</span>`).join('');
     const has=t.platforms.some(p=>p.arch===CFG.arch && (!CFG.variant || (p.variant||'')===CFG.variant));
     return `<tr><td><input type="checkbox" style="width:auto" data-i="${i}" ${CHK.has(t.tag)?'checked':''} ${has?'':'disabled'}></td>
-      <td class="mono">${esc(t.tag)}</td><td class="dim">${esc(t.updated.slice(0,10))}</td>
+      <td class="mono">${esc(t.tag)}${aliasTag(t.tag)?' <span class="hint">别名</span>':''}</td><td class="dim">${esc(t.updated.slice(0,10))}</td>
       <td>${chips||'<span class="dim">无跨平台信息</span>'}
         ${has?'':`<span class="chip" style="color:#f85149">无 ${esc(CFG.arch)}</span>`}
         <button class="mini" style="margin-left:6px" ${has?'':'disabled'} onclick="queueOne(${i})">拉取 ${esc(CFG.arch)}</button></td></tr>`;
