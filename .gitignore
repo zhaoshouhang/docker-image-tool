@@ -1,0 +1,21 @@
+# 运行时产物：导出的 tar/tar.gz 可能有几十~几百 MB，绝不入库
+output/
+*.tar
+*.tar.gz
+
+# 本机配置：里面有代理地址、私有仓库用户名/密码，属于本地私密信息
+config.json
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 旧版本备份（v1 是"展示本地镜像"那版，代码在本地留档即可）
+*.bak
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
