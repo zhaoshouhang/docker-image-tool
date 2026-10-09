@@ -215,40 +215,54 @@ for _ in range(WORKERS):
 PAGE = r"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <title>镜像搜索 / 拉取 / 打包</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-:root{--bg:#111318;--card:#1a1d24;--fg:#e7e9ee;--dim:#98a1b0;--acc:#4f8cff;--ok:#3fb950;--bad:#f85149;--warn:#d29922}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:13.5px/1.55 -apple-system,"PingFang SC",Helvetica,Arial,sans-serif}
-header{padding:12px 16px;border-bottom:1px solid #262a33;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-h1{font-size:15px;margin:0}.dim{color:var(--dim);font-size:12px}
-main{padding:14px 16px;display:grid;grid-template-columns:1.55fr 1fr;gap:14px}
-@media(max-width:1000px){main{grid-template-columns:1fr}}
-.card{background:var(--card);border:1px solid #262a33;border-radius:10px;padding:12px 13px;margin-bottom:14px}
-.card h2{font-size:12.5px;margin:0 0 9px;color:var(--dim);font-weight:600;letter-spacing:.4px}
-table{width:100%;border-collapse:collapse;font-size:12.5px}
-th,td{text-align:left;padding:6px 6px;border-bottom:1px solid #22262f;vertical-align:top}
-th{color:var(--dim);font-weight:500}
+:root{
+  --bg:#111318;--card:#1a1d24;--fg:#eceef4;--dim:#a9b2c0;--acc:#5b93ff;--ok:#4ac95f;--bad:#ff6a60;--warn:#e3ad33;
+  /* 字体栈：macOS 优先，Windows(Segoe UI/微软雅黑/Consolas) 与 Linux 都有回退，避免落到 Courier New 那种发灰的细体 */
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Hiragino Sans GB","Noto Sans CJK SC","Noto Sans SC",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Cascadia Mono","DejaVu Sans Mono","Liberation Mono",monospace;
+}
+/* 根字号随视口放大：笔记本高分辨率(2560/1920 下 100% 缩放)不会再显得小，最大 19px 防止过大 */
+html{font-size:clamp(15px,0.42vw + 11.6px,19px);-webkit-text-size-adjust:100%}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:1rem/1.6 var(--font);text-rendering:optimizeLegibility}
+header{padding:.8rem 1rem;border-bottom:1px solid #262a33;display:flex;gap:.7rem;align-items:center;flex-wrap:wrap}
+h1{font-size:1.15rem;margin:0;font-weight:600}
+.dim{color:var(--dim);font-size:.83rem}
+main{padding:.9rem 1rem;display:grid;grid-template-columns:minmax(0,1.62fr) minmax(0,1fr);gap:1rem;align-items:start}
+@media(max-width:1180px){main{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid #262a33;border-radius:.7rem;padding:.75rem .85rem;margin-bottom:.9rem}
+.card h2{font-size:.9rem;margin:0 0 .55rem;color:var(--dim);font-weight:600;letter-spacing:.03em}
+table{width:100%;border-collapse:collapse;font-size:.92rem;min-width:34rem}
+th,td{text-align:left;padding:.42em .5em;border-bottom:1px solid #22262f;vertical-align:top;color:var(--fg)}
+th{color:var(--dim);font-weight:500;white-space:nowrap}
 tbody tr:hover{background:#1f2430}tr.sel{background:#232c3e}
-.mono{font-family:ui-monospace,Menlo,monospace}
-.scroll{max-height:38vh;overflow:auto}
-input,select,textarea,button{background:#0e1015;color:var(--fg);border:1px solid #2b3140;border-radius:7px;padding:6px 8px;font-size:12.5px;font-family:inherit}
+/* 镜像名 / tag 名：明确纯白 + 中等字重，Windows 上 Consolas 也不会显得发灰 */
+.mono{font-family:var(--mono);color:#fff;font-weight:500;letter-spacing:.01em}
+.scroll{max-height:min(42vh,34rem);overflow:auto}
+input,select,textarea,button{background:#0e1015;color:var(--fg);border:1px solid #2b3140;border-radius:.5rem;
+  padding:.45em .7em;font:inherit;font-size:.95rem;min-height:2.35em}
 input[type=text],input[type=password],textarea{width:100%}
-button{cursor:pointer;background:#232a38}button:hover{border-color:var(--acc)}
+input[type=checkbox]{width:1.05em;height:1.05em;min-height:0;margin:0;vertical-align:-.12em}
+textarea{min-height:6em;font-family:var(--mono);font-size:.88rem}
+button{cursor:pointer;background:#232a38;white-space:nowrap}button:hover{border-color:var(--acc)}
 button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
-button.mini{padding:2px 7px;font-size:11.5px}
+button.mini{padding:.25em .6em;font-size:.86rem;min-height:1.95em}
 button:disabled{opacity:.4;cursor:not-allowed}
-.row{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:9px}
-label.f{display:block}.f .lb{color:var(--dim);font-size:11.5px;margin-bottom:3px;display:block}
-.chip{display:inline-block;font-size:11px;padding:1px 6px;border-radius:20px;background:#252b38;color:var(--dim);margin:1px 3px 1px 0}
-.chip.on{background:#1d3a23;color:#5fd47a}
-.tag{font-size:11px;padding:1px 7px;border-radius:20px;background:#272d3a;color:var(--dim)}
+.row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.55rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(14.5rem,1fr));gap:.6rem}
+label.f{display:block}.f .lb{color:var(--dim);font-size:.8rem;margin-bottom:.2rem;display:block}
+.chip{display:inline-block;font-size:.76rem;padding:.12em .5em;border-radius:1.2em;background:#252b38;color:#b9c2d0;margin:.08em .18em .08em 0;white-space:nowrap}
+.chip.on{background:#1d3a23;color:#6fd984;font-weight:600}
+.tag{font-size:.76rem;padding:.12em .5em;border-radius:1.2em;background:#272d3a;color:var(--dim)}
 .tag.done{background:#16351f;color:var(--ok)}.tag.failed{background:#3a1b1b;color:var(--bad)}
-.tag.running{background:#1b2b47;color:#7fb0ff}.tag.queued{background:#2c2a1c;color:var(--warn)}
-pre{margin:5px 0 0;max-height:140px;overflow:auto;font-size:11px;color:var(--dim);white-space:pre-wrap;word-break:break-all}
-.job{border:1px solid #262a33;border-radius:8px;padding:7px 9px;margin-bottom:7px;background:#171a21}
+.tag.running{background:#1b2b47;color:#8cbaff}.tag.queued{background:#2c2a1c;color:var(--warn)}
+pre{margin:.35rem 0 0;max-height:12rem;overflow:auto;font-size:.8rem;font-family:var(--mono);color:#c3cbd8;white-space:pre-wrap;word-break:break-all}
+.job{border:1px solid #262a33;border-radius:.6rem;padding:.5rem .65rem;margin-bottom:.45rem;background:#171a21}
 a{color:var(--acc)}
-.bar{height:5px;background:#20242e;border-radius:5px;overflow:hidden;margin-top:5px}
+.bar{height:.4rem;background:#20242e;border-radius:.4rem;overflow:hidden;margin-top:.35rem}
 .bar>i{display:block;height:100%;background:var(--acc);transition:width .3s}
-.hint{font-size:11.5px;color:var(--dim)}
+.hint{font-size:.8rem;color:var(--dim)}
+@media(max-width:640px){html{font-size:15px}table{min-width:30rem}}
 </style></head><body>
 <header>
   <h1>镜像搜索 / 拉取 / 打包</h1>
@@ -411,7 +425,7 @@ async function doSearch(p){
 function pickRepo(ref,keep){
   SELREPO=ref; CHK.clear(); $('#tRepo').textContent='→ '+ref; if(!keep) $('#tFilter').value=''; loadTags(1);
   $$('#sRows tr').forEach(tr=>tr.classList.toggle('sel', tr.dataset.ref===ref));
-  $('#tRows').scrollIntoView({behavior:'smooth',block:'center'});
+  const box=document.querySelector('#tRows').closest('.scroll'); if(box) box.scrollTop=0;
 }
 async function loadTags(p){
   if(!SELREPO) return;
