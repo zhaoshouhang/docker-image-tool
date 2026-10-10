@@ -440,15 +440,32 @@ class H(BaseHTTPRequestHandler):
             if u.path == "/api/retry":
                 with JOBS_LOCK:
                     if body.get("id"):
-                        targets = [dict(JOBS[body["id"]])] if body["id"] in JOBS else []
+                        j = JOBS.get(body["id"])
+                        targets = [body["id"]] if j and j["status"] not in ("queued", "running") else []
                     else:                                  # 不给 id = 重试全部失败的
-                        targets = [dict(JOBS[i]) for i in JOB_ORDER if JOBS[i]["status"] == "failed"]
-                if not targets:
+                        targets = [i for i in JOB_ORDER if JOBS[i]["status"] == "failed"]
+                retried = []
+                for jid in targets:
+                    with JOBS_LOCK:
+                        j = JOBS.get(jid)
+                        if not j:
+                            continue
+                        # 复用同一条任务：原地重置重跑，不新增任务行；cfg 保留原 registry/代理
+                        j["status"] = "queued"
+                        j["prog"] = None
+                        j["result"] = None
+                        j["error"] = None
+                        j["log"] = []
+                        j["cancel"] = threading.Event()
+                        j["queued"] = time.time()
+                        if jid in JOB_ORDER:
+                            JOB_ORDER.remove(jid)
+                        JOB_ORDER.insert(0, jid)
+                    Q.put(jid)
+                    retried.append(jid)
+                if not retried:
                     return self._send(400, {"error": "没有可重试的任务"})
-                ids = enqueue([{"repo": j["repo"], "tag": j["tag"], "display": j["display"],
-                                "os": j["os"], "arch": j["arch"], "variant": j["variant"]}
-                               for j in targets], cfg_snapshot=dict(CFG))
-                return self._send(200, {"ids": ids, "n": len(ids)})
+                return self._send(200, {"ids": retried, "n": len(retried)})
             if u.path == "/api/delete":
                 f = os.path.basename(body.get("file") or "")
                 p = os.path.join(CFG.get("outdir") or DEFAULT_OUT, f)
@@ -465,6 +482,13 @@ class H(BaseHTTPRequestHandler):
                         except OSError:
                             pass
                 return self._send(200, {"ok": True})
+            if u.path == "/api/clear":
+                with JOBS_LOCK:
+                    rm = [i for i in JOB_ORDER if JOBS[i]["status"] in ("done", "failed", "cancelled")]
+                    for i in rm:
+                        JOBS.pop(i, None)
+                    JOB_ORDER[:] = [i for i in JOB_ORDER if i not in rm]
+                return self._send(200, {"n": len(rm)})
             return self._send(404, {"error": "no route"})
         except Exception as e:  # noqa
             return self._send(200, {"error": f"{type(e).__name__}: {e}"})

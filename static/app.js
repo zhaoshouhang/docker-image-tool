@@ -207,25 +207,35 @@ async function tick(){
     const d=await api('/api/jobs');
     $('#jobs').innerHTML=d.jobs.map(j=>{
       const p=j.prog, pct=p&&p.total?Math.min(100,Math.round(p.done*100/p.total)):0;
-      return `<div class="job"><b>${esc(j.title)}</b> <span class="tag ${j.status}">${j.status}</span>
+      const active=j.status==='queued'||j.status==='running';
+      return `<div class="job ${active?'':'settled'}">
+        <div class="jhead"><b>${esc(j.title)}</b> <span class="tag ${j.status}">${j.status}</span>
+          ${j.result?`<span class="hint">${esc(j.result.file)} · ${fmt(j.result.bytes)}</span>`:''}
+          <span class="jsp"></span>
+          ${active?`<button class="mini" onclick="cancelOne('${j.id}')">取消</button>`:''}
+          ${!active?`<button class="mini" onclick="retryOne('${j.id}')">重试</button>`:''}
+        </div>
         ${p?`<div class="hint">层 ${p.layer}/${p.layers} · ${fmt(p.done)}/${fmt(p.total)} · ${fmt(p.speed)}/s</div><div class="bar"><i style="width:${pct}%"></i></div>`:''}
-        ${j.result?`<div class="hint">${esc(j.result.file)} · ${fmt(j.result.bytes)} · ${esc(j.result.platform)} · 镜像名 ${esc(j.result.tag_in_archive)} · <a href="/api/download?f=${encodeURIComponent(j.result.file)}">下载</a> · sha256 ${esc(j.result.sha256.slice(0,12))}…</div>`:''}
-        ${j.error?`<div style="color:#f85149">${esc(j.error)}</div>`:''}
-        ${(j.status==='queued'||j.status==='running')?`<button class="mini" style="margin-top:.3rem" onclick="cancelOne('${j.id}')">取消</button>`:''}
-        ${j.status==='failed'||j.status==='done'||j.status==='cancelled'?`<button class="mini" style="margin-top:.3rem" onclick="retryOne('${j.id}')">重试这个任务</button>`:''}
-        <pre>${esc(j.log.slice(-8).join('\n'))}</pre></div>`;
+        ${j.result?`<div class="hint">${esc(j.result.platform)} · 镜像名 ${esc(j.result.tag_in_archive)} · sha256 ${esc(j.result.sha256.slice(0,12))}…</div>`:''}
+        ${j.error?`<div class="err">${esc(j.error)}</div>`:''}
+        ${j.log.length?`<details class="jlog"><summary>日志</summary><pre>${esc(j.log.slice(-30).join('\n'))}</pre></details>`:''}
+      </div>`;
     }).join('')||'<span class="hint">暂无任务</span>';
     $('#retryAllBtn').style.display = d.jobs.some(j=>j.status==='failed') ? '' : 'none';
     $('#cancelAllBtn').style.display = d.jobs.some(j=>j.status==='queued'||j.status==='running') ? '' : 'none';
+    $('#clearDoneBtn').style.display = d.jobs.some(j=>j.status!=='queued'&&j.status!=='running') ? '' : 'none';
     const f=await api('/api/files');
     $('#files').innerHTML=f.files.map(x=>`<div class="row frow">
-      <span class="mono" style="flex:1">${esc(x.name)}</span>
+      <span class="fname" title="${esc(x.name)}">${esc(x.name)}</span>
       <span class="dim">${fmt(x.bytes)}</span>
-      <a href="/api/download?f=${encodeURIComponent(x.name)}">下载</a>
-      <button class="mini" onclick="copyLoad('${esc(x.name)}')">复制 load 命令</button>
-      <a href="#" onclick="del('${esc(x.name)}');return false">删除</a></div>`).join('')||'<span class="hint">无</span>';
+      <span class="actions">
+        <a href="/api/download?f=${encodeURIComponent(x.name)}">下载</a>
+        <button class="mini" onclick="copyLoad('${esc(x.name)}')">复制 load 命令</button>
+        <a href="#" onclick="del('${esc(x.name)}');return false">删除</a>
+      </span></div>`).join('')||'<span class="hint">无</span>';
   }catch(e){}
 }
+async function clearDone(){ const d=await post('/api/clear',{}); $('#qMsg').textContent=`已清除 ${d.n} 个已结束任务`; tick(); }
 let _toast;
 function flash(msg){
   if(!_toast){_toast=document.createElement('div'); _toast.className='toast'; document.body.appendChild(_toast);}
@@ -243,8 +253,8 @@ async function copyLoad(name){
 }
 async function cancelOne(id){ await post('/api/cancel',{id}); $('#qMsg').textContent='已请求取消'; tick(); }
 async function cancelAll(){ const d=await post('/api/cancel',{}); $('#qMsg').textContent=`已取消 ${d.n} 个排队/运行中的任务`; tick(); }
-async function retryOne(id){ await post('/api/retry',{id}); $('#qMsg').textContent='已重新入队'; tick(); }
-async function retryAll(){ const d=await post('/api/retry',{}); $('#qMsg').textContent=`已重新入队 ${d.n} 个失败任务`; tick(); }
+async function retryOne(id){ await post('/api/retry',{id}); $('#qMsg').textContent='已重试'; tick(); }
+async function retryAll(){ const d=await post('/api/retry',{}); $('#qMsg').textContent=`已重试 ${d.n} 个失败任务`; tick(); }
 async function del(f){if(!confirm('删除 '+f+' ?'))return; await post('/api/delete',{file:f}); tick();}
 
 loadCfg().then(()=>{

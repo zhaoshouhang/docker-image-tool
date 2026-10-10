@@ -131,13 +131,14 @@
       <div class="card">
         <h2>任务 <span class="dim" id="qMsg"></span>
           <button class="mini" id="cancelAllBtn" style="display:none;margin-left:.4rem" onclick="cancelAll()">全部取消</button>
-          <button class="mini" id="retryAllBtn" style="display:none;margin-left:.4rem" onclick="retryAll()">重试失败的全部</button></h2>
-        <div id="jobs"><span class="hint">暂无任务</span></div>
+          <button class="mini" id="retryAllBtn" style="display:none;margin-left:.4rem" onclick="retryAll()">重试失败的全部</button>
+          <button class="mini" id="clearDoneBtn" style="display:none;margin-left:.4rem" onclick="clearDone()">清除已结束</button></h2>
+        <div class="scroll jobs-scroll"><div id="jobs"><span class="hint">暂无任务</span></div></div>
       </div>
 
       <div class="card">
         <h2>已生成的包 <span class="dim" id="outDir"></span></h2>
-        <div id="files"><span class="hint">无</span></div>
+        <div class="scroll files-scroll"><div id="files"><span class="hint">无</span></div></div>
       </div>
     </div>
   </div>

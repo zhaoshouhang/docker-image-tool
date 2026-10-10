@@ -87,12 +87,24 @@ label.f{display:block}.f .lb{color:var(--dim);font-size:.8rem;margin-bottom:.2re
 .tag.cancelled{background:#332b3a;color:#c3a8e0}
 pre{margin:.35rem 0 0;max-height:12rem;overflow:auto;font-size:.8rem;font-family:var(--mono);color:#c3cbd8;white-space:pre-wrap;word-break:break-all}
 .job{border:1px solid #262a33;border-radius:.6rem;padding:.5rem .65rem;margin-bottom:.45rem;background:#171a21}
+.job.settled{opacity:.9}
+.jhead{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap}
+.jhead b{flex:0 0 auto}
+.jsp{flex:1 1 1rem;min-width:0}
+.err{color:var(--bad);font-size:.85rem;word-break:break-word;margin-top:.25rem}
+.jlog{margin-top:.3rem}
+.jlog summary{cursor:pointer;color:var(--dim);font-size:.8rem;user-select:none}
+.jlog summary:hover{color:var(--fg)}
+.jlog pre{margin-top:.25rem}
+.jobs-scroll{max-height:min(48vh,30rem)}
+.files-scroll{max-height:min(32vh,22rem)}
 a{color:var(--acc)}
 .bar{height:.4rem;background:#20242e;border-radius:.4rem;overflow:hidden;margin-top:.35rem}
 .bar>i{display:block;height:100%;background:var(--acc);transition:width .3s}
 .hint{font-size:.8rem;color:var(--dim)}
-.frow{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:2px 0}
-.frow .mono{flex:1 1 12rem;min-width:0;overflow-wrap:anywhere}
+.frow{display:flex;gap:.5rem;align-items:center;flex-wrap:nowrap;margin:3px 0}
+.frow .fname{flex:1 1 auto;min-width:0;font-family:var(--mono);color:#fff;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.frow .actions{flex:0 0 auto;display:flex;gap:.5rem;align-items:center}
 
 /* 提示浮层 */
 .toast{position:fixed;left:50%;bottom:1.4rem;transform:translateX(-50%) translateY(.5rem);
