@@ -1,6 +1,6 @@
 
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-let CFG={}, SELREPO=null, TAGS=[], sPage=1, tPage=1, CHK=new Set(), SRC='mirror';
+let CFG={}, SELREPO=null, TAGS=[], sPage=1, tPage=1, CHK=new Set(), SRC='mirror', _jobsKey='';
 const esc=s=>String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 const fmt=b=>b>1073741824?(b/1073741824).toFixed(2)+' GB':b>1048576?(b/1048576).toFixed(1)+' MB':(b/1024).toFixed(0)+' KB';
 const nfmt=n=>n>1e8?(n/1e8).toFixed(1)+'亿':n>1e4?(n/1e4).toFixed(1)+'万':String(n);
@@ -205,22 +205,29 @@ async function queueBatch(){
 async function tick(){
   try{
     const d=await api('/api/jobs');
-    $('#jobs').innerHTML=d.jobs.map(j=>{
-      const p=j.prog, pct=p&&p.total?Math.min(100,Math.round(p.done*100/p.total)):0;
-      const active=j.status==='queued'||j.status==='running';
-      return `<div class="job ${active?'':'settled'}">
-        <div class="jhead"><b>${esc(j.title)}</b> <span class="tag ${j.status}">${j.status}</span>
-          ${j.result?`<span class="hint">${esc(j.result.file)} · ${fmt(j.result.bytes)}</span>`:''}
-          <span class="jsp"></span>
-          ${active?`<button class="mini" onclick="cancelOne('${j.id}')">取消</button>`:''}
-          ${!active?`<button class="mini" onclick="retryOne('${j.id}')">重试</button>`:''}
-        </div>
-        ${p?`<div class="hint">层 ${p.layer}/${p.layers} · ${fmt(p.done)}/${fmt(p.total)} · ${fmt(p.speed)}/s</div><div class="bar"><i style="width:${pct}%"></i></div>`:''}
-        ${j.result?`<div class="hint">${esc(j.result.platform)} · 镜像名 ${esc(j.result.tag_in_archive)} · sha256 ${esc(j.result.sha256.slice(0,12))}…</div>`:''}
-        ${j.error?`<div class="err">${esc(j.error)}</div>`:''}
-        ${j.log.length?`<details class="jlog"><summary>日志</summary><pre>${esc(j.log.slice(-30).join('\n'))}</pre></details>`:''}
-      </div>`;
-    }).join('')||'<span class="hint">暂无任务</span>';
+    // 记住当前展开的日志，重渲染后还原，避免刷新把它又叠起来
+    const openIds=new Set($$('#jobs .job').map(el=>el.querySelector('.jlog[open]')?el.dataset.id:null).filter(Boolean));
+    // 内容没变就不重渲染（空闲时用户展开的日志自然不会被收起来）
+    const key=JSON.stringify(d.jobs.map(j=>[j.id,j.status,j.prog&&Math.round(j.prog.done),j.result&&j.result.file,j.error,j.log.length]));
+    if(key!==_jobsKey){
+      _jobsKey=key;
+      $('#jobs').innerHTML=d.jobs.map(j=>{
+        const p=j.prog, pct=p&&p.total?Math.min(100,Math.round(p.done*100/p.total)):0;
+        const active=j.status==='queued'||j.status==='running';
+        return `<div class="job ${active?'':'settled'}" data-id="${j.id}">
+          <div class="jhead"><b>${esc(j.title)}</b> <span class="tag ${j.status}">${j.status}</span>
+            ${j.result?`<span class="hint">${esc(j.result.file)} · ${fmt(j.result.bytes)}</span>`:''}
+            <span class="jsp"></span>
+            ${active?`<button class="mini" onclick="cancelOne('${j.id}')">取消</button>`:''}
+            ${!active?`<button class="mini" onclick="retryOne('${j.id}')">重试</button>`:''}
+          </div>
+          ${p?`<div class="hint">层 ${p.layer}/${p.layers} · ${fmt(p.done)}/${fmt(p.total)} · ${fmt(p.speed)}/s</div><div class="bar"><i style="width:${pct}%"></i></div>`:''}
+          ${j.result?`<div class="hint">${esc(j.result.platform)} · 镜像名 ${esc(j.result.tag_in_archive)} · sha256 ${esc(j.result.sha256.slice(0,12))}…</div>`:''}
+          ${j.error?`<div class="err">${esc(j.error)}</div>`:''}
+          ${j.log.length?`<details class="jlog" ${openIds.has(j.id)?'open':''}><summary>日志</summary><pre>${esc(j.log.slice(-30).join('\n'))}</pre></details>`:''}
+        </div>`;
+      }).join('')||'<span class="hint">暂无任务</span>';
+    }
     $('#retryAllBtn').style.display = d.jobs.some(j=>j.status==='failed') ? '' : 'none';
     $('#cancelAllBtn').style.display = d.jobs.some(j=>j.status==='queued'||j.status==='running') ? '' : 'none';
     $('#clearDoneBtn').style.display = d.jobs.some(j=>j.status!=='queued'&&j.status!=='running') ? '' : 'none';
