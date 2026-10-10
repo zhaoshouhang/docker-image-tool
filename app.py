@@ -125,6 +125,22 @@ def safe_name(s):
     return re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("_")
 
 
+def resolve_host(ref, cfg):
+    """按镜像完整引用 + 当前配置，算出从哪个 registry 拉。
+    ref 形如 nginx / linuxserver/sonarr / ghcr.io/a/b / localhost:5000/a/b"""
+    use_mirror = bool(cfg.get("use_mirror", True))
+    r = ref.replace("library/", "", 1) if ref.startswith("library/") else ref
+    parts = r.split("/")
+    host = None
+    if len(parts) > 1 and ("." in parts[0] or ":" in parts[0] or parts[0] == "localhost"):
+        host = parts[0]
+    if host is None:  # Docker Hub 镜像 → 走镜像站或官方
+        return (cfg.get("registry") or "registry-1.docker.io") if use_mirror else "registry-1.docker.io"
+    if use_mirror and cfg.get("registry_mode") == "all":  # 自带 registry 但开了「全部走镜像站」
+        return cfg.get("registry") or host
+    return host
+
+
 def worker_loop():
     while True:
         jid = Q.get()
@@ -450,7 +466,12 @@ class H(BaseHTTPRequestHandler):
                         j = JOBS.get(jid)
                         if not j:
                             continue
-                        # 复用同一条任务：原地重置重跑，不新增任务行；cfg 保留原 registry/代理
+                        # 复用同一条任务：原地重置重跑，不新增任务行。
+                        # 但用「当前设置」重新解析拉取源：失败后切换镜像站/代理再重试会生效，
+                        # 而 ghcr.io 这类自带 registry 的镜像仍保持它自己的地址。
+                        cfg = dict(CFG)
+                        cfg["registry"] = resolve_host(j["display"] or j["repo"], cfg)
+                        j["cfg"] = cfg
                         j["status"] = "queued"
                         j["prog"] = None
                         j["result"] = None
