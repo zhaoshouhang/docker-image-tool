@@ -1,0 +1,121 @@
+:root{
+  --bg:#111318;--card:#1a1d24;--fg:#eceef4;--dim:#a9b2c0;--acc:#5b93ff;--ok:#4ac95f;--bad:#ff6a60;--warn:#e3ad33;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Hiragino Sans GB","Noto Sans CJK SC","Noto Sans SC",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Cascadia Mono","DejaVu Sans Mono","Liberation Mono",monospace;
+}
+html{font-size:clamp(15px,0.42vw + 11.6px,19px);-webkit-text-size-adjust:100%}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:1rem/1.6 var(--font);text-rendering:optimizeLegibility}
+header{padding:.8rem 1.1rem;border-bottom:1px solid #262a33;display:flex;gap:.7rem;align-items:center;flex-wrap:wrap}
+h1{font-size:1.15rem;margin:0;font-weight:600}
+.dim{color:var(--dim);font-size:.83rem}
+header .sub{opacity:.85}
+
+/* 布局：设置/直接拉取 全宽，下面两栏（左=查找版本，右=任务+成品） */
+main{max-width:1400px;margin:0 auto;padding:.9rem 1.1rem;display:flex;flex-direction:column;gap:1rem}
+.cols{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:1rem;align-items:start}
+.col{min-width:0;display:flex;flex-direction:column;gap:1rem}
+@media(max-width:1080px){.cols{grid-template-columns:1fr}}
+
+.card{background:var(--card);border:1px solid #262a33;border-radius:.75rem;padding:.8rem .9rem}
+.card h2{font-size:.9rem;margin:0 0 .6rem;color:var(--dim);font-weight:600;letter-spacing:.03em}
+.card h2 .dim{font-size:.8rem}
+
+/* 直接拉取 hero */
+.hero{border-color:#2c3648;background:linear-gradient(180deg,#1c212c,#1a1d24)}
+.hero h2{color:var(--fg)}
+.hero textarea{min-height:6.5rem;font-size:.9rem}
+button.big{padding:.5em 1.6em;font-size:1rem}
+
+table{width:100%;border-collapse:collapse;font-size:.92rem;min-width:34rem}
+th,td{text-align:left;padding:.42em .5em;border-bottom:1px solid #22262f;vertical-align:top;color:var(--fg)}
+th{color:var(--dim);font-weight:500;white-space:nowrap}
+tbody tr:hover{background:#1f2430}tr.sel{background:#232c3e}
+.mono{font-family:var(--mono);color:#fff;font-weight:500;letter-spacing:.01em}
+.scroll{max-height:min(42vh,34rem);overflow:auto}
+
+input,select,textarea,button{background:#0e1015;color:var(--fg);border:1px solid #2b3140;border-radius:.5rem;
+  padding:.45em .85em;font:inherit;font-size:.95rem;min-height:2.35em;box-sizing:border-box}
+button,input[type=text],input[type=password],textarea{-webkit-appearance:none;appearance:none}
+select{-webkit-appearance:none;appearance:none;padding-right:2.1em;
+  background-image:linear-gradient(45deg,transparent 50%,#9aa3b2 50%),linear-gradient(135deg,#9aa3b2 50%,transparent 50%);
+  background-position:calc(100% - 1.15em) calc(50% + .1em),calc(100% - .8em) calc(50% + .1em);
+  background-size:.36em .36em,.36em .36em;background-repeat:no-repeat}
+button,input,select{flex:0 0 auto}
+input[type=text],input[type=password]{flex:1 1 12rem;min-width:0;width:auto}
+.row>.hint,.row>span.hint,.row>.dim,.row>span.dim{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+input[type=checkbox]{width:1.05em;height:1.05em;min-height:0;margin:0;vertical-align:-.12em}
+textarea{min-height:6em;font-family:var(--mono);font-size:.88rem;width:100%}
+button{cursor:pointer;background:#232a38;white-space:nowrap}button:hover{border-color:var(--acc)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+button.mini{padding:.25em .6em;font-size:.86rem;min-height:1.95em}
+button:disabled{opacity:.4;cursor:not-allowed}
+.row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.55rem}
+.toolbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:.5rem;align-items:center}
+.toolbar>*{min-width:0}
+.toolbar>.w2{grid-column:span 2}
+.toolbar>button{justify-self:start}
+@media(max-width:760px){.toolbar>.w2{grid-column:auto}}
+select{max-width:100%}
+main>*,.card,.grid>label.f,.toolbar>*,.col{min-width:0}
+.grid select,.grid input{width:100%}
+
+/* 设置：分区 + 高级折叠 */
+.set-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:.8rem}
+.set-sec h3{font-size:.8rem;margin:.2rem 0 .5rem;color:var(--dim);font-weight:600;letter-spacing:.02em}
+.set-sec{margin-bottom:.4rem}
+.set-sec .set-grid{grid-template-columns:repeat(auto-fit,minmax(14rem,1fr))}
+details.advanced{border-top:1px solid #262a33;margin-top:.6rem;padding-top:.5rem}
+details.advanced summary{cursor:pointer;color:var(--dim);font-size:.85rem;user-select:none}
+details.advanced summary:hover{color:var(--fg)}
+.seg{display:inline-flex;gap:.3rem;background:#0e1015;border:1px solid #2b3140;border-radius:.6rem;padding:.22rem}
+.seg button{background:transparent!important;border:none!important;min-height:2.1em!important;padding:.25em 1em!important;color:var(--dim)!important}
+.seg button:hover{color:var(--fg)!important;border:none!important}
+.seg button.active{background:var(--acc)!important;color:#fff!important;font-weight:600}
+#mirrorFields{margin-top:.5rem;padding-left:0;display:grid;gap:.4rem}
+.prow{display:grid;grid-template-columns:1fr 6.8rem 5.6rem;gap:.4rem;max-width:22rem}
+.prow>select{width:100%}
+@media(max-width:420px){.prow{grid-template-columns:1fr 1fr}}
+label.f{display:block}.f .lb{color:var(--dim);font-size:.8rem;margin-bottom:.2rem;display:block}
+
+.chip{display:inline-block;font-size:.76rem;padding:.12em .5em;border-radius:1.2em;background:#252b38;color:#b9c2d0;margin:.08em .18em .08em 0;white-space:nowrap}
+.chip.on{background:#1d3a23;color:#6fd984;font-weight:600}
+.chip.src{background:#1b2b47;color:#8cbaff;font-weight:600;cursor:pointer}
+.tag{font-size:.76rem;padding:.12em .5em;border-radius:1.2em;background:#272d3a;color:var(--dim)}
+.tag.done{background:#16351f;color:var(--ok)}.tag.failed{background:#3a1b1b;color:var(--bad)}
+.tag.running{background:#1b2b47;color:#8cbaff}.tag.queued{background:#2c2a1c;color:var(--warn)}
+.tag.cancelled{background:#332b3a;color:#c3a8e0}
+pre{margin:.35rem 0 0;max-height:12rem;overflow:auto;font-size:.8rem;font-family:var(--mono);color:#c3cbd8;white-space:pre-wrap;word-break:break-all}
+.job{border:1px solid #262a33;border-radius:.6rem;padding:.5rem .65rem;margin-bottom:.45rem;background:#171a21}
+a{color:var(--acc)}
+.bar{height:.4rem;background:#20242e;border-radius:.4rem;overflow:hidden;margin-top:.35rem}
+.bar>i{display:block;height:100%;background:var(--acc);transition:width .3s}
+.hint{font-size:.8rem;color:var(--dim)}
+.frow{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:2px 0}
+.frow .mono{flex:1 1 12rem;min-width:0;overflow-wrap:anywhere}
+
+/* 提示浮层 */
+.toast{position:fixed;left:50%;bottom:1.4rem;transform:translateX(-50%) translateY(.5rem);
+  background:#232a38;color:var(--fg);border:1px solid #3a4250;border-radius:.6rem;padding:.5em 1em;
+  font-size:.9rem;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:99}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+@media(max-width:640px){html{font-size:15px}table{min-width:30rem}}
+
+/* ---- 防外部样式覆盖（浏览器扩展/宿主注入的 reset）---- */
+html,body{margin:0!important;padding:0!important}
+input,select,textarea,button{-webkit-appearance:none!important;appearance:none!important;box-sizing:border-box!important;
+  margin:0!important;font-family:var(--font)!important;font-size:.95rem!important;min-height:2.35em!important;
+  color:var(--fg)!important;background:#0e1015!important;border:1px solid #2b3140!important;border-radius:.5rem!important;
+  padding:.45em .85em!important}
+button{cursor:pointer!important;background:#232a38!important;white-space:nowrap!important;flex:0 0 auto!important}
+button.primary{background:var(--acc)!important;border-color:var(--acc)!important;color:#fff!important;font-weight:600!important}
+button.mini{padding:.25em .6em!important;min-height:1.95em!important}
+select{padding-right:2.1em!important;background-color:#0e1015!important;
+  background-image:linear-gradient(45deg,transparent 50%,#9aa3b2 50%),linear-gradient(135deg,#9aa3b2 50%,transparent 50%)!important;
+  background-position:calc(100% - 1.15em) calc(50% + .1em),calc(100% - .8em) calc(50% + .1em)!important;
+  background-size:.36em .36em,.36em .36em!important;background-repeat:no-repeat!important}
+input[type=text],input[type=password]{padding:.45em .7em!important}
+input[type=checkbox]{padding:0!important;min-height:0!important;width:1.05em!important;height:1.05em!important}
+input[type=radio]{padding:0!important;min-height:0!important;width:1.05em!important;height:1.05em!important}
+textarea{min-height:6em!important;width:100%!important;font-family:var(--mono)!important;font-size:.88rem!important}

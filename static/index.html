@@ -1,0 +1,145 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<title>镜像拉取 / 打包</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/app.css?v=__V__"></head><body>
+<header>
+  <h1>镜像拉取 / 打包</h1>
+  <span class="dim sub">搜镜像 · 选版本/架构 · 导出 tar.gz · 内网 docker load</span>
+  <span style="flex:1"></span>
+  <span id="srcChip" class="chip src" title="点击修改拉取来源" onclick="toggle('setBox')">拉取源 …</span>
+  <button onclick="toggle('setBox')">设置</button>
+</header>
+
+<main>
+  <!-- 设置：默认收起，改完即保存（change 自动保存） -->
+  <div class="card" id="setBox" style="display:none">
+    <h2>设置 <span class="dim" id="cfgMsg"></span></h2>
+
+    <div class="set-grid">
+      <section class="set-sec">
+        <h3>拉取来源</h3>
+        <div class="seg">
+          <button type="button" id="srcMirror" onclick="setSource('mirror')">镜像站（国内加速）</button>
+          <button type="button" id="srcOfficial" onclick="setSource('official')">官方 registry（需代理）</button>
+        </div>
+        <div id="mirrorFields">
+          <label class="f"><span class="lb">镜像站地址</span><input type="text" id="c_reg" list="mirrors"></label>
+          <datalist id="mirrors">
+            <option value="docker.1ms.run"><option value="docker.m.daocloud.io">
+            <option value="docker-0.unsee.tech"><option value="registry-1.docker.io">
+            <option value="ghcr.io"><option value="lscr.io"><option value="quay.io">
+          </datalist>
+          <label class="f"><span class="lb">换源范围</span><select id="c_mode">
+            <option value="hub">只给 Docker Hub 镜像换源（推荐）</option>
+            <option value="all">全部走镜像站地址</option></select></label>
+        </div>
+      </section>
+
+      <section class="set-sec">
+        <h3>默认平台（导出用这个架构）</h3>
+        <div class="prow">
+          <select id="c_os"><option>linux</option></select>
+          <select id="c_arch"><option>amd64</option><option>arm64</option><option>arm</option><option>386</option><option>ppc64le</option><option>s390x</option><option>riscv64</option></select>
+          <select id="c_var"><option value="">variant</option><option>v8</option><option>v7</option><option>v6</option></select>
+        </div>
+      </section>
+
+      <section class="set-sec">
+        <h3>输出</h3>
+        <label class="f"><span class="lb">输出目录</span><input type="text" id="c_out"></label>
+        <label class="f"><span class="lb">压缩</span><select id="c_gz">
+          <option value="1">tar.gz（推荐）</option><option value="0">tar（不压缩）</option></select></label>
+      </section>
+    </div>
+
+    <details class="set-sec advanced">
+      <summary>高级</summary>
+      <div class="set-grid">
+        <label class="f"><span class="lb">搜索 / 标签 API 地址</span><input type="text" id="c_api"></label>
+        <label class="f"><span class="lb">HTTP 代理（留空=直连）</span><input type="text" id="c_proxy" placeholder="http://127.0.0.1:18080"></label>
+        <label class="f"><span class="lb">代理用在哪</span><select id="c_pscope">
+          <option value="auto">自动（推荐）</option><option value="all">全部走代理</option><option value="off">不用代理</option></select></label>
+        <label class="f"><span class="lb">私有仓库用户名</span><input type="text" id="c_user"></label>
+        <label class="f"><span class="lb">私有仓库密码</span><input type="password" id="c_pass"></label>
+        <label class="f"><span class="lb">下载失败自动重试次数（0 = 只用手动「重试」）</span><input type="text" id="c_retries" placeholder="2"></label>
+        <label class="f"><span class="lb">重试间隔（秒）</span><input type="text" id="c_rdelay" placeholder="3"></label>
+        <label class="hint"><input type="checkbox" id="c_insecure" style="width:auto"> 跳过 TLS 校验（自建 registry 自签证书）</label>
+        <label class="hint"><input type="checkbox" id="c_suffix" style="width:auto"> 归档内标签加 -架构 后缀</label>
+      </div>
+    </details>
+
+    <div class="row" style="margin-top:.6rem">
+      <button class="primary" onclick="saveCfg(true)">保存并关闭</button>
+      <button onclick="testCfg()">测试连通性</button>
+      <span class="hint" id="testMsg"></span>
+    </div>
+  </div>
+
+  <!-- 直接拉取：知道镜像名就走这里 -->
+  <div class="card hero">
+    <h2>直接拉取</h2>
+    <textarea id="bList" rows="4" placeholder="每行一个镜像，例如：&#10;nginx:1.27.3&#10;mysql:8.4&#10;ghcr.io/advplyr/audiobookshelf:latest"></textarea>
+    <div class="row" style="margin-top:.6rem">
+      <button class="primary big" onclick="queueBatch()">拉取</button>
+      <input type="text" id="bCompose" placeholder="docker-compose.yml 路径（可选）">
+      <button onclick="parseCompose()">读取 compose</button>
+      <span class="hint" style="flex:1;text-align:right">平台 <b id="curArch"></b> · <span id="curSrc">…</span></span>
+    </div>
+    <div class="hint" id="bMsg" style="margin-top:.3rem"></div>
+  </div>
+
+  <div class="cols">
+    <div class="col">
+      <div class="card">
+        <h2>查找镜像版本 <span class="dim" id="tRepo"></span></h2>
+        <div class="toolbar">
+          <input type="text" id="q" class="w2" placeholder="搜索仓库，如 nginx / mysql / siyuan">
+          <button class="primary" onclick="doSearch(1)">搜索</button>
+        </div>
+        <div class="hint" id="sMsg" style="margin:.4rem 0"></div>
+        <div class="scroll"><table>
+          <thead><tr><th>仓库</th><th style="width:74px">★ / 拉取</th><th>说明</th><th style="width:52px"></th></tr></thead>
+          <tbody id="sRows"><tr><td colspan="4" class="hint">输入关键字搜索；搜索只对 Docker Hub 有效。</td></tr></tbody>
+        </table></div>
+        <div class="row" style="margin-top:7px"><button id="moreS" onclick="doSearch(sPage+1)" style="display:none">下一页</button></div>
+
+        <div class="toolbar" style="margin-top:.8rem">
+          <input type="text" id="tFilter" placeholder="按 tag 过滤，如 1.27 / alpine / stable">
+          <select id="tOrder" onchange="loadTags(1)">
+            <option value="version_desc">按版本号（新→旧）· 别名置底</option>
+            <option value="last_updated">按更新时间（新→旧）</option>
+            <option value="-last_updated">按更新时间（旧→新）</option>
+            <option value="name">按名字 A→Z</option></select>
+          <select id="tArch" onchange="renderTags()">
+            <option value="">显示全部架构</option><option value="amd64">只看 amd64</option>
+            <option value="arm64">只看 arm64</option><option value="arm">只看 arm/v7</option></select>
+          <button onclick="loadTags(1)">刷新版本</button>
+        </div>
+        <div class="dim" id="tMsg" style="margin:.4rem 0"></div>
+        <div class="scroll"><table>
+          <thead><tr><th style="width:40px"></th><th style="width:210px">tag</th><th style="width:92px">更新</th><th>可用架构（点「拉取」按设置里的平台导）</th></tr></thead>
+          <tbody id="tRows"><tr><td colspan="4" class="hint">先在上面搜索并点一个仓库。</td></tr></tbody>
+        </table></div>
+        <div class="row" style="margin-top:.6rem">
+          <button id="moreT" onclick="loadTags(tPage+1)" style="display:none">下一页</button>
+          <button class="primary" onclick="queueChecked()">把勾选的 tag 按当前平台导出</button>
+        </div>
+        <div class="hint" id="selMsg"></div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="card">
+        <h2>任务 <span class="dim" id="qMsg"></span>
+          <button class="mini" id="cancelAllBtn" style="display:none;margin-left:.4rem" onclick="cancelAll()">全部取消</button>
+          <button class="mini" id="retryAllBtn" style="display:none;margin-left:.4rem" onclick="retryAll()">重试失败的全部</button></h2>
+        <div id="jobs"><span class="hint">暂无任务</span></div>
+      </div>
+
+      <div class="card">
+        <h2>已生成的包 <span class="dim" id="outDir"></span></h2>
+        <div id="files"><span class="hint">无</span></div>
+      </div>
+    </div>
+  </div>
+</main>
+<script src="/static/app.js?v=__V__"></script></body></html>

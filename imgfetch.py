@@ -25,6 +25,7 @@ import io
 import json
 import os
 import re
+import socket
 import ssl
 import sys
 import tarfile
@@ -46,6 +47,44 @@ UA = "imgfetch/2.0 (+stdlib)"
 # ------------------------------------------------------------------ errors
 class FetchError(Exception):
     pass
+
+
+class PermanentError(FetchError):
+    """重试也没意义的错误（权限/不存在）"""
+    pass
+
+
+class Cancelled(Exception):
+    """调用方主动取消（界面上的"取消"按钮）"""
+    pass
+
+
+def kill_response(r):
+    """让正在阻塞读取的响应立刻失败：先 shutdown 底层 socket（在 macOS 上 close() 唤不醒阻塞中的
+    recv()，shutdown 可以），再 close。找不到 socket 就只 close —— 上层的取消标志仍会在下一次
+    读到数据或超时后生效。"""
+    if r is None:
+        return
+    sock = None
+    for path in (("fp", "raw", "_sock"), ("fp", "raw"), ("_sock",), ("fp",)):
+        obj = r
+        try:
+            for k in path:
+                obj = getattr(obj, k)
+        except Exception:
+            continue
+        if hasattr(obj, "shutdown") and hasattr(obj, "close"):
+            sock = obj
+            break
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+    try:
+        r.close()
+    except Exception:
+        pass
 
 
 # ------------------------------------------------------------------ helpers
@@ -127,6 +166,7 @@ class Client:
                 urllib.request.ProxyHandler({"http": self.proxy, "https": self.proxy}))
         else:
             self.viaproxy = self.direct
+        self.on_response = None       # 可选：下载中的响应对象回调（取消时直接 close，让阻塞读立刻中断）
         self._tokens = {}
 
     def _is_hub(self):
@@ -175,7 +215,8 @@ class Client:
             with self._open(url, hdr) as r:
                 data = json.loads(r.read())
         except urllib.error.HTTPError as e:
-            raise FetchError(f"取 token 失败 {e.code} ({realm}): {e.read()[:200]!r}")
+            cls = PermanentError if e.code in (401, 403, 404) else FetchError
+            raise cls(f"取 token 失败 {e.code} ({realm}): {e.read()[:200]!r}")
         tok = data.get("token") or data.get("access_token")
         if not tok:
             raise FetchError(f"token 响应里没有 token: {list(data)[:6]}")
@@ -214,7 +255,8 @@ class Client:
                         raise FetchError(f"无法完成认证: {www[:200]}")
                     self._tokens[scope] = tok
                     continue
-                raise FetchError(f"HTTP {e.code} {url}: {e.read()[:200]!r}")
+                cls = PermanentError if e.code in (400, 403, 404) else FetchError
+                raise cls(f"HTTP {e.code} {url}: {e.read()[:200]!r}")
             except urllib.error.URLError as e:
                 raise FetchError(f"连不上 {self.host}: {e.reason}（可能需要配置代理或换镜像站）")
         raise FetchError(f"认证重试失败: {last}")
@@ -248,7 +290,7 @@ class Client:
                     and (not variant or p["variant"] == variant)]
             if not want:
                 have = ", ".join(f"{p['os']}/{p['arch']}" + (f"/{p['variant']}" if p["variant"] else "") for p in plats)
-                raise FetchError(f"该 tag 没有 {os_}/{arch}{'/' + variant if variant else ''}；可用平台: {have}")
+                raise PermanentError(f"该 tag 没有 {os_}/{arch}{'/' + variant if variant else ''}；可用平台: {have}")
             # variant 未指定时优先 v8/v7 这类标准变体
             want.sort(key=lambda p: (p["variant"] not in (None, "v8", "v7"), p["variant"] or ""))
             pick = want[0]
@@ -260,14 +302,42 @@ class Client:
                              "variant": data.get("variant")},
                 "platforms": None, "config_digest": data.get("config", {}).get("digest")}
 
-    def blob(self, repo, digest, dest_path, progress=None, total=None):
-        """下载 blob 到文件，校验 sha256。"""
+    def blob(self, repo, digest, dest_path, progress=None, total=None, retries=3, retry_delay=3.0,
+             should_stop=None):
+        """下载 blob 到文件并校验 sha256；网络类错误自动重试，支持断点续传，可被取消。"""
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return self._blob_once(repo, digest, dest_path, progress, total, should_stop)
+            except (PermanentError, Cancelled):
+                raise
+            except Exception as e:
+                if attempt > retries:
+                    raise FetchError(f"下载失败（共尝试 {retries + 1} 次）{digest[:19]}: {e}")
+                wait = max(0.0, retry_delay) * attempt
+                if should_stop and should_stop():
+                    raise Cancelled("用户取消")
+                size = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
+                self.log(f"  下载中断（{type(e).__name__}: {str(e)[:70]}）；{wait:.1f}s 后自动重试 "
+                         f"[{attempt}/{retries}]" + (f"，从 {human(size)} 处续传" if size else ""))
+                time.sleep(wait)
+
+    def _blob_once(self, repo, digest, dest_path, progress=None, total=None, should_stop=None):
         scope = f"repository:{repo}:pull"
         url = f"https://{self.host}/v2/{repo}/blobs/{digest}"
+        resume = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
+        h = hashlib.sha256()
+        if resume:                                     # 已下载部分先计入校验
+            with open(dest_path, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
         hdr = {"User-Agent": UA}
         tok = self._tokens.get(scope)
         if tok:
             hdr["Authorization"] = "Bearer " + tok
+        if resume:
+            hdr["Range"] = f"bytes={resume}-"
         try:
             r = self._open(url, hdr)
         except urllib.error.HTTPError as e:
@@ -275,16 +345,32 @@ class Client:
                 www = e.headers.get("WWW-Authenticate", "")
                 tok = self._token_for(www, scope)
                 if not tok:
-                    raise FetchError(f"blob 认证失败: {www[:160]}")
+                    raise PermanentError(f"blob 认证失败: {www[:160]}")
                 self._tokens[scope] = tok
                 hdr["Authorization"] = "Bearer " + tok
                 r = self._open(url, hdr)
+            elif e.code == 416:
+                if resume:
+                    os.remove(dest_path)
+                    raise IOError("断点信息失效，重新下载")
+                raise FetchError(f"HTTP 416 下载 {digest[:19]}")
             else:
-                raise FetchError(f"HTTP {e.code} 下载 {digest[:19]}")
-        h = hashlib.sha256()
-        done = 0
-        with open(dest_path, "wb") as f:
+                msg = f"HTTP {e.code} 下载 {digest[:19]}"
+                if e.code in (400, 401, 403, 404):     # 权限/不存在 → 重试也没用，直接失败
+                    raise PermanentError(msg)
+                raise IOError(msg)
+        if self.on_response:
+            self.on_response(r)                        # 交给调用方，取消时可直接 close 掉
+        status = getattr(r, "status", 200)
+        if resume and status != 206:                   # 服务端不支持 Range，忽略已下载部分
+            self.log("  服务端不支持断点续传，从头下载")
+            h = hashlib.sha256()
+            resume = 0
+        done = resume
+        with open(dest_path, "ab" if resume else "wb") as f:
             while True:
+                if should_stop and should_stop():
+                    raise Cancelled("用户取消")
                 chunk = r.read(1 << 20)
                 if not chunk:
                     break
@@ -293,9 +379,13 @@ class Client:
                 done += len(chunk)
                 if progress:
                     progress(done, total)
+        if self.on_response:
+            self.on_response(None)
         got = "sha256:" + h.hexdigest()
         if got != digest:
-            raise FetchError(f"层校验失败 期望 {digest} 实际 {got}")
+            if os.path.exists(dest_path):
+                os.remove(dest_path)                   # 内容不对，丢掉重来
+            raise IOError(f"层校验失败（将重新下载）期望 {digest[:19]} 实际 {got[:19]}")
         return done
 
 
@@ -393,20 +483,39 @@ def _write_tar(out_path, entries, gz):
 
 def pull(repo_full, tag, out_path, platform_os="linux", platform_arch="amd64", variant=None,
          host="registry-1.docker.io", proxy=None, username=None, password=None, insecure=False,
-         repo_tag=None, display_repo=None, archive="docker-archive", gz=True, log=None, progress=None,
-         timeout=60, keep_tar=False, proxy_scope="auto"):
+         repo_tag=None, display_repo=None, gz=True, log=None, progress=None,
+         timeout=60, keep_tar=False, proxy_scope="auto", retries=3, retry_delay=3.0, should_stop=None,
+         on_response=None):
     """拉取远端镜像并落成 tar/tar.gz（本地无需 docker）。
 
     display_repo: 归档里 RepoTags 用的仓库名（默认去掉 Docker Hub 的 library/ 前缀，
                   与 docker pull 的显示名一致；compose 里写的也是这个名字）。
-    archive: 'docker-archive'（老 docker 也认）/ 'oci-archive'
+    始终输出 docker-archive（老 docker / podman / containerd 都能 load）。
     返回 dict(file, bytes, sha256, platform, layers, config, digest)
     """
     log = log or (lambda *a: None)
+
+    def ck(where=""):
+        if should_stop and should_stop():
+            raise Cancelled("用户取消" + (f"（{where}）" if where else ""))
+
+    ck("开始")
     cli = Client(host, proxy=proxy, username=username, password=password,
                  insecure=insecure, timeout=timeout, log=log, proxy_scope=proxy_scope)
+    cli.on_response = on_response
     log(f"registry = {host}   镜像 = {repo_full}:{tag}")
-    res = cli.resolve(repo_full, tag, os_=platform_os, arch=platform_arch, variant=variant)
+    res = None
+    for _a in range(1, retries + 2):                      # 解析 manifest 也重试（网络抖动很常见）
+        try:
+            res = cli.resolve(repo_full, tag, os_=platform_os, arch=platform_arch, variant=variant)
+            break
+        except PermanentError:
+            raise
+        except Exception as e:
+            if _a > retries:
+                raise
+            log(f"解析 manifest 失败（{type(e).__name__}: {str(e)[:70]}）；{retry_delay * _a:.1f}s 后重试 [{_a}/{retries}]")
+            time.sleep(retry_delay * _a)
     man, plat = res["manifest"], res["platform"]
     log(f"选中平台 = {plat['os']}/{plat['arch']}" + (f"/{plat['variant']}" if plat["variant"] else "")
         + f"   digest = {res['digest']}")
@@ -418,7 +527,9 @@ def pull(repo_full, tag, out_path, platform_os="linux", platform_arch="amd64", v
         cfg_digest = man["config"]["digest"]
         cfg_path = os.path.join(tmp, "config.json")
         log(f"下载 config {cfg_digest[:19]}...")
-        cli.blob(repo_full, cfg_digest, cfg_path, progress=None, total=man["config"].get("size"))
+        ck("config")
+        cli.blob(repo_full, cfg_digest, cfg_path, progress=None, total=man["config"].get("size"),
+                 retries=retries, retry_delay=retry_delay, should_stop=should_stop)
         cfg = json.load(open(cfg_path, encoding="utf-8"))
         diff_ids = cfg.get("rootfs", {}).get("diff_ids", [])
         arch_in_cfg = (cfg.get("architecture"), cfg.get("os"))
@@ -432,6 +543,7 @@ def pull(repo_full, tag, out_path, platform_os="linux", platform_arch="amd64", v
         total_bytes = sum(l.get("size", 0) for l in man["layers"])
         log(f"开始下载 {len(man['layers'])} 层，约 {human(total_bytes)}（压缩后）")
         for idx, layer in enumerate(man["layers"], 1):
+            ck(f"第 {idx}/{len(man['layers'])} 层")
             dg = layer["digest"]
             mt = layer.get("mediaType", "")
             blob_file = os.path.join(tmp, f"blob{idx}")
@@ -445,13 +557,15 @@ def pull(repo_full, tag, out_path, platform_os="linux", platform_arch="amd64", v
                     sp = done / max(1e-6, now - t0)
                     progress(idx, len(man["layers"]), done, layer.get("size", 0), sp)
 
-            cli.blob(repo_full, dg, blob_file, progress=cb, total=layer.get("size"))
+            cli.blob(repo_full, dg, blob_file, progress=cb, total=layer.get("size"),
+                     retries=retries, retry_delay=retry_delay, should_stop=should_stop)
             is_gz = mt.endswith("gzip") or open(blob_file, "rb").read(2) == b"\x1f\x8b"
             if is_gz:
                 out_l = os.path.join(tmp, f"layer{idx}.tar")
                 h = hashlib.sha256()
                 with gzip.open(blob_file, "rb") as fi, open(out_l, "wb") as fo:
                     while True:
+                        ck("解压")
                         b = fi.read(1 << 20)
                         if not b:
                             break
@@ -470,36 +584,23 @@ def pull(repo_full, tag, out_path, platform_os="linux", platform_arch="amd64", v
             log(f"  [{idx}/{len(man['layers'])}] {dg[7:19]}  {human(layer.get('size', 0))}  "
                 f"{time.time()-t0:.1f}s  解压后 diff={diff[7:19]}")
 
-        # 3) 组装归档
+        # 3) 组装 docker-archive（老 docker / podman / containerd 都能 load）
+        ck("打包")
         tag_out = repo_tag or tag
         name_out = display_repo or (repo_full[8:] if repo_full.startswith("library/") else repo_full)
-        log(f"打包 -> {os.path.basename(out_path)}（{archive}{'，gzip' if gz else ''}），镜像名 {name_out}:{tag_out}")
+        log(f"打包 -> {os.path.basename(out_path)}（docker-archive{'，gzip' if gz else ''}），镜像名 {name_out}:{tag_out}")
         cfg_id = cfg_digest.split(":")[1]
-        if archive == "docker-archive":
-            manifest_json = json.dumps([{
-                "Config": f"{cfg_id}.json",
-                "RepoTags": [f"{name_out}:{tag_out}"],
-                "Layers": [f"{lid}/layer.tar" for lid in layer_ids],
-            }], ensure_ascii=False).encode()
-            repositories = json.dumps({name_out: {tag_out: layer_ids[-1] if layer_ids else ""}}).encode()
-            entries = entries_layer + [
-                (f"{cfg_id}.json", "file", cfg_path),
-                ("manifest.json", "bytes", manifest_json),
-                ("repositories", "bytes", repositories),
-            ]
-        else:  # oci-archive
-            cfg_entry = f"blobs/sha256/{cfg_id}"
-            entries = [(cfg_entry, "file", cfg_path)]
-            for lid in layer_ids:
-                entries.append((f"blobs/sha256/{lid}", "file", os.path.join(tmp, f"layer{layer_ids.index(lid)+1}.tar")))
-            entries.append(("oci-layout", "bytes", json.dumps({"imageLayoutVersion": "1.0.0"}).encode()))
-            entries.append(("index.json", "bytes", json.dumps({
-                "schemaVersion": 2, "manifests": [{
-                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                    "digest": res["digest"].replace("sha256:", "sha256:"),
-                    "size": 0,
-                    "annotations": {"org.opencontainers.image.ref.name": f"{repo_full}:{tag_out}"}}]}).encode()))
-            log("提示：oci-archive 需要 docker >= 25 才能 load")
+        manifest_json = json.dumps([{
+            "Config": f"{cfg_id}.json",
+            "RepoTags": [f"{name_out}:{tag_out}"],
+            "Layers": [f"{lid}/layer.tar" for lid in layer_ids],
+        }], ensure_ascii=False).encode()
+        repositories = json.dumps({name_out: {tag_out: layer_ids[-1] if layer_ids else ""}}).encode()
+        entries = entries_layer + [
+            (f"{cfg_id}.json", "file", cfg_path),
+            ("manifest.json", "bytes", manifest_json),
+            ("repositories", "bytes", repositories),
+        ]
         _write_tar(out_path, entries, gz)
 
     size = os.path.getsize(out_path)
