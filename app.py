@@ -16,7 +16,6 @@ import os
 import sys
 import queue
 import re
-import socket
 import threading
 import time
 import uuid
@@ -35,7 +34,38 @@ for _s in (sys.stdout, sys.stderr):
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(BASE, "static")      # index.html / app.css / app.js
 CONFIG_PATH = os.path.join(BASE, "config.json")
-DEFAULT_OUT = os.path.join(BASE, "output")
+def _default_out_dir():
+    """默认导出目录：各平台「下载」文件夹下的 docker-images 子目录。
+    Windows 用 Shell 已知文件夹 API 定位（用户可能把下载挪到别的盘），
+    取不到再退回 %USERPROFILE%\\Downloads；其它平台用 ~/Downloads。"""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _GUID(ctypes.Structure):
+                _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                            ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+            # FOLDERID_Downloads = {374DE290-123F-4565-9164-39C4925E467B}
+            fid = _GUID(0x374DE290, 0x123F, 0x4565,
+                        (ctypes.c_ubyte * 8)(0x91, 0x64, 0x39, 0xC4, 0x92, 0x5E, 0x46, 0x7B))
+            p = ctypes.c_wchar_p()
+            # KF_FLAG_CREATE = 0x00008000
+            if ctypes.windll.shell32.SHGetKnownFolderPath(
+                    ctypes.byref(fid), 0x00008000, None, ctypes.byref(p)) == 0:
+                path = p.value
+                ctypes.windll.ole32.CoTaskMemFree(p)
+                if path:
+                    return os.path.join(path, "docker-images")
+        except Exception:
+            pass
+        base = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+        return os.path.join(base, "Downloads", "docker-images")
+    return os.path.join(os.path.expanduser("~"), "Downloads", "docker-images")
+
+
+DEFAULT_OUT = _default_out_dir()
 JOBS = {}
 JOB_ORDER = []
 JOBS_LOCK = threading.Lock()
@@ -47,8 +77,11 @@ DEFAULT_CONFIG = {
     "use_mirror": True,                       # True=从镜像站拉取；False=直连官方 registry（Docker Hub 走代理）
     "registry": "docker.1ms.run",             # 镜像站地址（use_mirror=True 时生效）
     "registry_mode": "hub",                   # hub=只给 Docker Hub 镜像换源 / all=全部走该地址
-    "proxy": "",                              # 例 http://127.0.0.1:18080
-    "proxy_scope": "auto",                    # auto=Hub走代理其余直连 / all=全走 / off=全直连
+    "proxy_mode": "off",                      # off=不使用 / system=系统代理 / custom=自定义
+    "proxy_http": "",                         # 自定义 HTTP 代理，例 http://127.0.0.1:8080
+    "proxy_https": "",                        # 自定义 HTTPS 代理
+    "proxy_socks5": "",                       # 自定义 SOCKS5 代理，例 socks5://127.0.0.1:1080
+    "proxy_scope": "auto",                    # auto=Hub走代理其余直连 / all=全走
     "username": "", "password": "",
     "insecure": False,
     "os": "linux", "arch": "amd64", "variant": "",
@@ -67,19 +100,22 @@ def load_config():
             cfg.update(json.load(open(CONFIG_PATH, encoding="utf-8")))
         except Exception:
             pass
-    if not cfg.get("proxy"):  # 自动探测本机代理
-        for p in (18080, 7890, 1087, 8080):
-            s = socket.socket()
-            s.settimeout(0.2)
-            try:
-                s.connect(("127.0.0.1", p))
-                cfg["proxy"] = f"http://127.0.0.1:{p}"
-                break
-            except Exception:
-                pass
-            finally:
-                s.close()
+    _migrate_proxy(cfg)
     return cfg
+
+
+def _migrate_proxy(cfg):
+    """兼容旧配置：旧版只有一个 proxy 字符串 → 迁到 proxy_http/proxy_https。"""
+    legacy = cfg.pop("proxy", None)
+    if legacy and not (cfg.get("proxy_http") or cfg.get("proxy_https") or cfg.get("proxy_socks5")):
+        cfg["proxy_mode"] = "custom"
+        cfg["proxy_http"] = legacy
+        cfg["proxy_https"] = legacy
+    if cfg.get("proxy_scope") == "off":       # 旧的「不用代理」= 现在 proxy_mode=off
+        cfg["proxy_mode"] = "off"
+        cfg["proxy_scope"] = "auto"
+    if cfg.get("proxy_mode") not in ("off", "system", "custom"):
+        cfg["proxy_mode"] = "off"
 
 
 CFG = load_config()
@@ -94,8 +130,12 @@ def save_config(d):
     CFG["gzip"] = bool(CFG.get("gzip"))
     CFG["tag_suffix"] = bool(CFG.get("tag_suffix"))
     CFG["use_mirror"] = bool(CFG.get("use_mirror", True))
-    if CFG.get("proxy_scope") not in ("auto", "all", "off"):
+    if CFG.get("proxy_scope") not in ("auto", "all"):
         CFG["proxy_scope"] = "auto"
+    if CFG.get("proxy_mode") not in ("off", "system", "custom"):
+        CFG["proxy_mode"] = "off"
+    for _k in ("proxy_http", "proxy_https", "proxy_socks5"):
+        CFG[_k] = str(CFG.get(_k) or "").strip()
     try:
         CFG["retries"] = max(0, int(CFG.get("retries", 2)))
         CFG["retry_delay"] = max(0.0, float(CFG.get("retry_delay", 3)))
@@ -103,6 +143,17 @@ def save_config(d):
         CFG["retries"], CFG["retry_delay"] = 2, 3
     json.dump(CFG, open(CONFIG_PATH, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     return CFG
+
+
+def proxy_spec(cfg):
+    """把配置里的代理字段拼成 imgfetch 认识的 dict（None=不用代理）。"""
+    mode = cfg.get("proxy_mode") or "off"
+    if mode == "off":
+        return None
+    return {"mode": mode,
+            "http": cfg.get("proxy_http") or "",
+            "https": cfg.get("proxy_https") or "",
+            "socks5": cfg.get("proxy_socks5") or ""}
 
 
 # ------------------------------------------------------------------ 任务
@@ -183,7 +234,7 @@ def run_job(jid):
         jset(jid, prog={"layer": idx, "layers": layers, "done": done,
                         "total": total or 0, "speed": speed})
 
-    log(f"registry={c['registry']}  代理={c.get('proxy') or '无'}")
+    log(f"registry={c['registry']}  代理={F.proxy_desc(proxy_spec(c))}")
     suffix = f"-{arch}" if c.get("tag_suffix") else ""
     tag_in_archive = (job["tag_out"] or tag) + suffix
     fname = f"{safe_name(job['display'] or repo)}_{safe_name(tag)}_{os_}-{arch}"
@@ -196,7 +247,7 @@ def run_job(jid):
     try:
         res = F.pull(repo, tag, out_path,
                      platform_os=os_, platform_arch=arch, variant=variant or None,
-                     host=c["registry"], proxy=c.get("proxy") or None,
+                     host=c["registry"], proxy=proxy_spec(c),
                      username=c.get("username") or None, password=c.get("password") or None,
                      insecure=bool(c.get("insecure")), repo_tag=tag_in_archive,
                      display_repo=job["display"] or None,
@@ -328,14 +379,14 @@ class H(BaseHTTPRequestHandler):
             if u.path == "/api/search":
                 d = F.search_repos(q.get("q", [""])[0], page=int(q.get("page", ["1"])[0]),
                                    page_size=25, api_base=CFG["api_base"],
-                                   proxy=CFG.get("proxy") or None, insecure=CFG.get("insecure"),
+                                   proxy=proxy_spec(CFG), insecure=CFG.get("insecure"),
                                    proxy_scope=CFG.get("proxy_scope", "auto"))
                 return self._send(200, d)
             if u.path == "/api/tags":
                 d = F.repo_tags(q.get("repo", [""])[0], name_filter=q.get("filter", [""])[0],
                                 page=int(q.get("page", ["1"])[0]), page_size=50,
                                 ordering=q.get("ordering", ["last_updated"])[0],
-                                api_base=CFG["api_base"], proxy=CFG.get("proxy") or None,
+                                api_base=CFG["api_base"], proxy=proxy_spec(CFG),
                                 insecure=CFG.get("insecure"), proxy_scope=CFG.get("proxy_scope", "auto"))
                 return self._send(200, d)
             if u.path == "/api/compose":
@@ -519,14 +570,14 @@ class H(BaseHTTPRequestHandler):
         scope = cfg.get("proxy_scope") or "auto"
         try:
             d = F.search_repos("alpine", page_size=1, api_base=cfg.get("api_base") or DEFAULT_CONFIG["api_base"],
-                               proxy=cfg.get("proxy") or None, insecure=bool(cfg.get("insecure")),
+                               proxy=proxy_spec(cfg), insecure=bool(cfg.get("insecure")),
                                proxy_scope=scope)
             out.append(f"搜索API OK（命中 {d['count']}）")
         except Exception as e:
             out.append(f"搜索API 失败: {e}")
         try:
             rhost = "registry-1.docker.io" if not cfg.get("use_mirror", True) else (cfg.get("registry") or "registry-1.docker.io")
-            cli = F.Client(rhost, proxy=cfg.get("proxy") or None,
+            cli = F.Client(rhost, proxy=proxy_spec(cfg),
                            insecure=bool(cfg.get("insecure")), timeout=25, proxy_scope=scope)
             data, digest, _ = cli.manifest("library/alpine", "latest")
             n = len(data.get("manifests", []))
@@ -548,7 +599,7 @@ def main():
     missing = [f for f in ("index.html", "app.css", "app.js") if not os.path.isfile(os.path.join(STATIC, f))]
     if missing:
         print(f"!! static/ 缺少文件: {missing} —— 页面会打不开，请确认目录完整")
-    print(f"搜索API : {CFG['api_base']}   代理: {CFG['proxy'] or '无'}")
+    print(f"搜索API : {CFG['api_base']}   代理: {F.proxy_desc(proxy_spec(CFG))}")
     print(f"拉取源  : {CFG['registry']}（模式 {CFG['registry_mode']}）  默认平台: {CFG['os']}/{CFG['arch']}{'/'+CFG['variant'] if CFG['variant'] else ''}")
     print(f"输出目录: {CFG.get('outdir')}")
     print(f"打开 http://{a.host}:{a.port}   （Ctrl+C 停止）")

@@ -6,7 +6,7 @@ imgfetch.py —— 零依赖（仅标准库）的容器镜像拉取/搜索/打�
 特点：
   * 不需要本机安装 docker（直接跟 registry v2 API 说话）
   * 可以直接使用 Docker Hub 镜像站（docker.1ms.run / *.daocloud.io / ...）
-  * 支持 HTTP 代理（国内直连 Docker Hub 通常不通）
+  * 支持系统代理 / 自定义 HTTP·HTTPS·SOCKS5 代理（国内直连 Docker Hub 通常不通）
   * 明确的平台（架构）选择：linux/amd64、linux/arm64/v8 ...
   * 输出 docker-archive（兼容老版本 docker load）或 oci-archive，可 gzip
   * 每层下载后校验 sha256，并校验解压后的 diff_id 与 config.rootfs.diff_ids 一致
@@ -21,12 +21,15 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
+import http.client
 import io
+import ipaddress
 import json
 import os
 import re
 import socket
 import ssl
+import struct
 import sys
 import tarfile
 import tempfile
@@ -139,6 +142,178 @@ HUB_HOSTS = ("registry-1.docker.io", "auth.docker.io", "index.docker.io", "hub.d
              "docker.io", "production.cloudflare.docker.com")
 
 
+# ------------------------------------------------------------------ 代理
+def _resolve_proxy(proxy):
+    """把 proxy 参数归一化成 {'mode','http','https','socks5'}。
+    mode: off=不用 / system=系统代理 / custom=自定义。
+    兼容旧版的单个字符串（http+https 都走它）。"""
+    if not proxy:
+        return {"mode": "off", "http": "", "https": "", "socks5": ""}
+    if isinstance(proxy, str):
+        return {"mode": "custom", "http": proxy, "https": proxy, "socks5": ""}
+    d = dict(proxy)
+    mode = d.get("mode") or "custom"
+    if mode not in ("off", "system", "custom"):
+        mode = "custom"
+    if mode == "off":
+        return {"mode": "off", "http": "", "https": "", "socks5": ""}
+    return {"mode": mode,
+            "http": (d.get("http") or "").strip(),
+            "https": (d.get("https") or "").strip(),
+            "socks5": (d.get("socks5") or "").strip()}
+
+
+def proxy_desc(proxy):
+    p = _resolve_proxy(proxy)
+    if p["mode"] == "off":
+        return "无"
+    if p["mode"] == "system":
+        return "系统代理"
+    parts = []
+    if p["socks5"]:
+        parts.append("socks5=" + p["socks5"])
+    if p["http"]:
+        parts.append("http=" + p["http"])
+    if p["https"]:
+        parts.append("https=" + p["https"])
+    return "、".join(parts) or "自定义"
+
+
+def _recv_exact(sock, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise OSError("代理连接被提前关闭")
+        buf += chunk
+    return buf
+
+
+def _socks5_connect(proxy_host, proxy_port, dest_host, dest_port,
+                    username=None, password=None, timeout=60):
+    """仅标准库实现的 SOCKS5 客户端：握手（可选用户名/密码认证）→ CONNECT，
+    返回与目标建好隧道的 socket。域名交给代理解析（避免本机 DNS 污染）。"""
+    if timeout in (None, socket._GLOBAL_DEFAULT_TIMEOUT):
+        timeout = 60
+    s = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
+    s.settimeout(timeout)
+    try:
+        methods = [0x00]
+        if username:
+            methods.append(0x02)
+        s.sendall(b"\x05" + bytes([len(methods)]) + bytes(methods))
+        ver, method = _recv_exact(s, 2)
+        if ver != 0x05:
+            raise OSError(f"SOCKS5 握手异常 (ver={ver})")
+        if method == 0x02:
+            u = (username or "").encode(); pw = (password or "").encode()
+            if len(u) > 255 or len(pw) > 255:
+                raise OSError("SOCKS5 用户名/密码过长")
+            s.sendall(b"\x01" + bytes([len(u)]) + u + bytes([len(pw)]) + pw)
+            a, st = _recv_exact(s, 2)
+            if a != 0x01 or st != 0x00:
+                raise OSError("SOCKS5 用户名/密码认证失败")
+        elif method != 0x00:
+            raise OSError(f"SOCKS5 代理要求不支持的认证方式 (0x{method:02x})")
+        req = b"\x05\x01\x00"
+        try:
+            ip = ipaddress.ip_address(dest_host)
+            req += (b"\x04" if isinstance(ip, ipaddress.IPv6Address) else b"\x01") + ip.packed
+        except ValueError:
+            host = dest_host.encode("idna")
+            req += b"\x03" + bytes([len(host)]) + host
+        req += struct.pack(">H", dest_port)
+        s.sendall(req)
+        resp = _recv_exact(s, 4)
+        if resp[0] != 0x05 or resp[1] != 0x00:
+            raise OSError(f"SOCKS5 连接失败 (code=0x{resp[1]:02x})")
+        atyp = resp[3]
+        if atyp == 0x01:
+            _recv_exact(s, 4 + 2)
+        elif atyp == 0x03:
+            ln = _recv_exact(s, 1)[0]
+            _recv_exact(s, ln + 2)
+        elif atyp == 0x04:
+            _recv_exact(s, 16 + 2)
+        else:
+            raise OSError(f"SOCKS5 响应异常 (atyp=0x{atyp:02x})")
+        return s
+    except Exception:
+        try:
+            s.close()
+        except Exception:
+            pass
+        raise
+
+
+def _socks5_connection(proxy, base):
+    """返回一个走 SOCKS5 隧道的 http.client 连接类（HTTP 或 HTTPS）。"""
+    ph, pp = proxy["host"], proxy["port"]
+    user, pwd = proxy.get("username"), proxy.get("password")
+
+    class _SocksConn(base):
+        def connect(self):
+            self.sock = _socks5_connect(ph, pp, self.host, self.port, user, pwd, self.timeout)
+            if base is http.client.HTTPSConnection:
+                self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
+
+    _SocksConn.__name__ = "Socks5" + base.__name__
+    return _SocksConn
+
+
+def _socks5_opener(socks_url, ctx):
+    pr = urllib.parse.urlparse(socks_url)
+    host, port = pr.hostname, pr.port or 1080
+    if not host:
+        raise FetchError(f"无法解析 SOCKS5 代理地址: {socks_url}")
+    proxy = {"host": host, "port": port, "username": pr.username, "password": pr.password}
+    HTTPConn = _socks5_connection(proxy, http.client.HTTPConnection)
+    HTTPSConn = _socks5_connection(proxy, http.client.HTTPSConnection)
+
+    class _SocksHTTPHandler(urllib.request.HTTPHandler):
+        def http_open(self, req):
+            return self.do_open(HTTPConn, req)
+
+    class _SocksHTTPSHandler(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(HTTPSConn, req, context=ctx)
+
+    return urllib.request.build_opener(
+        _SocksHTTPHandler, _SocksHTTPSHandler, urllib.request.ProxyHandler({}))
+
+
+def _build_openers(proxy, ctx):
+    """返回 (direct_opener, viaproxy_opener|None)。viaproxy=None 表示无可用代理。"""
+    direct = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=ctx),
+        urllib.request.ProxyHandler({}))
+    p = _resolve_proxy(proxy)
+    if p["mode"] == "off":
+        return direct, None
+    http_p, https_p, socks_p = p["http"], p["https"], p["socks5"]
+    if p["mode"] == "system":
+        try:
+            sysp = urllib.request.getproxies()
+        except Exception:
+            sysp = {}
+        http_p = http_p or sysp.get("http") or sysp.get("all") or ""
+        https_p = https_p or sysp.get("https") or sysp.get("all") or ""
+        socks_p = socks_p or sysp.get("socks5") or sysp.get("socks5h") or sysp.get("socks") or ""
+    if socks_p:                                   # 填了 SOCKS5 就全部走它
+        return direct, _socks5_opener(socks_p, ctx)
+    ph = {}
+    if http_p:
+        ph["http"] = http_p
+    if https_p:
+        ph["https"] = https_p
+    if not ph:
+        return direct, None
+    via = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=ctx),
+        urllib.request.ProxyHandler(ph))
+    return direct, via
+
+
 class Client:
     """一个 registry 的连接（含 token 缓存）。
 
@@ -152,20 +327,14 @@ class Client:
                  insecure=False, timeout=60, log=None, proxy_scope="auto"):
         self.host = host
         self.proxy = proxy or None
-        self.proxy_scope = proxy_scope if proxy else "off"
+        self.proxy_scope = proxy_scope if proxy_scope in ("auto", "all", "off") else "auto"
         self.username = username or None
         self.password = password or None
         self.timeout = timeout
         self.log = log or (lambda *a: None)
         ctx = _ssl_ctx(insecure)
-        self.direct = urllib.request.build_opener(
-            urllib.request.HTTPSHandler(context=ctx), urllib.request.ProxyHandler({}))
-        if self.proxy:
-            self.viaproxy = urllib.request.build_opener(
-                urllib.request.HTTPSHandler(context=ctx),
-                urllib.request.ProxyHandler({"http": self.proxy, "https": self.proxy}))
-        else:
-            self.viaproxy = self.direct
+        self.direct, via = _build_openers(proxy, ctx)
+        self.viaproxy = via if self.proxy_scope != "off" else None
         self.on_response = None       # 可选：下载中的响应对象回调（取消时直接 close，让阻塞读立刻中断）
         self._tokens = {}
 
@@ -175,6 +344,8 @@ class Client:
     def _open(self, url, headers, method="GET"):
         """按 proxy_scope 选 opener；非 Hub 域名直连失败时自动回退代理。"""
         req = urllib.request.Request(url, headers=headers, method=method)
+        if self.viaproxy is None:
+            return self.direct.open(req, timeout=self.timeout)
         if self.proxy_scope == "all":
             return self.viaproxy.open(req, timeout=self.timeout)
         if self.proxy_scope == "auto" and self._is_hub():
@@ -184,8 +355,8 @@ class Client:
         except urllib.error.HTTPError:
             raise
         except Exception as e:
-            if self.proxy_scope == "auto" and self.proxy:
-                self.log(f"直连 {self.host} 失败（{e}），自动改用代理 {self.proxy}")
+            if self.proxy_scope == "auto":
+                self.log(f"直连 {self.host} 失败（{e}），自动改用代理 {proxy_desc(self.proxy)}")
                 return self.viaproxy.open(req, timeout=self.timeout)
             raise
 
@@ -393,13 +564,8 @@ class Client:
 def _api_get(url, proxy=None, timeout=25, insecure=False, proxy_scope="auto"):
     """Docker Hub API 请求：auto/all 走代理，失败自动回退直连（off 则纯直连）。"""
     ctx = _ssl_ctx(insecure)
-    direct = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx),
-                                         urllib.request.ProxyHandler({}))
-    via = direct
-    if proxy:
-        via = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx),
-                                          urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    order = [direct] if (proxy_scope == "off" or not proxy) else ([via, direct] if proxy_scope == "auto" else [via])
+    direct, via = _build_openers(proxy, ctx)
+    order = [direct] if (proxy_scope == "off" or via is None) else ([via, direct] if proxy_scope == "auto" else [via])
     last = None
     for op in order:
         try:

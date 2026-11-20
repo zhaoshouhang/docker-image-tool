@@ -35,6 +35,24 @@
       </section>
 
       <section class="set-sec">
+        <h3>代理</h3>
+        <div class="seg">
+          <button type="button" id="pxOff" onclick="setProxyMode('off')">不使用</button>
+          <button type="button" id="pxSystem" onclick="setProxyMode('system')">系统代理</button>
+          <button type="button" id="pxCustom" onclick="setProxyMode('custom')">自定义</button>
+        </div>
+        <div id="proxyFields" style="display:none">
+          <label class="f"><span class="lb">HTTP 代理</span><input type="text" id="c_ph" placeholder="http://127.0.0.1:8080"></label>
+          <label class="f"><span class="lb">HTTPS 代理</span><input type="text" id="c_phs" placeholder="http://127.0.0.1:8080"></label>
+          <label class="f"><span class="lb">SOCKS5 代理</span><input type="text" id="c_ps" placeholder="socks5://127.0.0.1:1080"></label>
+        </div>
+        <label class="f" style="margin-top:.5rem"><span class="lb">代理范围</span><select id="c_pscope">
+          <option value="auto">自动（Hub 走代理，其余直连）</option>
+          <option value="all">全部走代理</option></select></label>
+        <label class="hint dim">HTTP/HTTPS 分别走对应代理；填了 SOCKS5 则全部走 SOCKS5。留空=直连。</label>
+      </section>
+
+      <section class="set-sec">
         <h3>默认平台（导出用这个架构）</h3>
         <div class="prow">
           <select id="c_os"><option>linux</option></select>
@@ -55,9 +73,6 @@
       <summary>高级</summary>
       <div class="set-grid">
         <label class="f"><span class="lb">搜索 / 标签 API 地址</span><input type="text" id="c_api"></label>
-        <label class="f"><span class="lb">HTTP 代理（留空=直连）</span><input type="text" id="c_proxy" placeholder="http://127.0.0.1:18080"></label>
-        <label class="f"><span class="lb">代理用在哪</span><select id="c_pscope">
-          <option value="auto">自动（推荐）</option><option value="all">全部走代理</option><option value="off">不用代理</option></select></label>
         <label class="f"><span class="lb">私有仓库用户名</span><input type="text" id="c_user"></label>
         <label class="f"><span class="lb">私有仓库密码</span><input type="password" id="c_pass"></label>
         <label class="f"><span class="lb">下载失败自动重试次数（0 = 只用手动「重试」）</span><input type="text" id="c_retries" placeholder="2"></label>

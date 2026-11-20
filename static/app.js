@@ -1,6 +1,6 @@
 
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-let CFG={}, SELREPO=null, TAGS=[], sPage=1, tPage=1, CHK=new Set(), SRC='mirror', _jobsKey='';
+let CFG={}, SELREPO=null, TAGS=[], sPage=1, tPage=1, CHK=new Set(), SRC='mirror', PROXYMODE='off', _jobsKey='';
 const esc=s=>String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 const fmt=b=>b>1073741824?(b/1073741824).toFixed(2)+' GB':b>1048576?(b/1048576).toFixed(1)+' MB':(b/1024).toFixed(0)+' KB';
 const nfmt=n=>n>1e8?(n/1e8).toFixed(1)+'亿':n>1e4?(n/1e4).toFixed(1)+'万':String(n);
@@ -14,8 +14,11 @@ async function loadCfg(){
   $('#c_api').value=CFG.api_base; $('#c_reg').value=CFG.registry; $('#c_mode').value=CFG.registry_mode;
   SRC = CFG.use_mirror!==false ? 'mirror' : 'official';
   paintSource();
-  $('#c_proxy').value=CFG.proxy; $('#c_user').value=CFG.username; $('#c_pass').value=CFG.password;
-  $('#c_pscope').value=CFG.proxy_scope||'auto';
+  PROXYMODE = CFG.proxy_mode || 'off';
+  $('#c_ph').value=CFG.proxy_http||''; $('#c_phs').value=CFG.proxy_https||''; $('#c_ps').value=CFG.proxy_socks5||'';
+  $('#c_pscope').value = CFG.proxy_scope==='all' ? 'all' : 'auto';
+  paintProxy();
+  $('#c_user').value=CFG.username; $('#c_pass').value=CFG.password;
   $('#c_os').value=CFG.os; $('#c_arch').value=CFG.arch; $('#c_var').value=CFG.variant||'';
   $('#c_gz').value=CFG.gzip?'1':'0'; $('#c_out').value=CFG.outdir;
   $('#c_insecure').checked=!!CFG.insecure; $('#c_suffix').checked=!!CFG.tag_suffix;
@@ -34,12 +37,23 @@ function paintSource(){
 }
 function setSource(v){ SRC=v; paintSource(); saveCfg(); }
 
+function paintProxy(){
+  $('#pxOff').classList.toggle('active', PROXYMODE==='off');
+  $('#pxSystem').classList.toggle('active', PROXYMODE==='system');
+  $('#pxCustom').classList.toggle('active', PROXYMODE==='custom');
+  $('#proxyFields').style.display = PROXYMODE==='custom' ? '' : 'none';
+}
+function setProxyMode(v){ PROXYMODE=v; paintProxy(); saveCfg(); }
+
 function collectCfg(){return {
   api_base:$('#c_api').value.trim(),
   registry:$('#c_reg').value.trim(),
   registry_mode:$('#c_mode').value,
   use_mirror: SRC==='mirror',
-  proxy:$('#c_proxy').value.trim(),
+  proxy_mode: PROXYMODE,
+  proxy_http:$('#c_ph').value.trim(),
+  proxy_https:$('#c_phs').value.trim(),
+  proxy_socks5:$('#c_ps').value.trim(),
   proxy_scope:$('#c_pscope').value,
   username:$('#c_user').value.trim(),
   password:$('#c_pass').value,
@@ -63,7 +77,7 @@ async function saveCfg(close){
 
 // 设置项 change 即保存，不再有「改了没点保存」的坑
 function setupAutosave(){
-  ['c_api','c_reg','c_mode','c_proxy','c_pscope','c_user','c_pass',
+  ['c_api','c_reg','c_mode','c_ph','c_phs','c_ps','c_pscope','c_user','c_pass',
    'c_os','c_arch','c_var','c_gz','c_out','c_retries','c_rdelay'].forEach(id=>{
     const e=$('#'+id); if(e) e.addEventListener('change',()=>saveCfg());
   });

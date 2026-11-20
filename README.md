@@ -14,7 +14,7 @@
     start.command    macOS 双击启动
     start.bat        Windows 双击启动
     config.json      本机设置（代理/镜像源/平台…；已 gitignore，不要提交）
-    output/          导出的 tar.gz + SHA256SUMS（已 gitignore）
+    （默认导出到各系统「下载」文件夹下的 docker-images，可在设置里改「输出目录」）
 
 static/ 下的文件每次请求都重新读取，**改 HTML/CSS/JS 不需要重启服务**（改了 app.py 才要重启）；
 页面里的 `?v=__V__` 由后端按 css/js 内容哈希动态替换，且响应带 `Cache-Control: no-store`，
@@ -41,7 +41,7 @@ static/ 下的文件每次请求都重新读取，**改 HTML/CSS/JS 不需要重
 3. **选架构**：每个 tag 后面直接标出可用架构与大小（amd64 / arm64/v8 / arm/v7 …）。
    设置里的「默认平台」决定「拉取」按钮导哪个架构；该 tag 没有这个架构时按钮置灰。
 4. **导出**：点「拉取 amd64」入队，后台下载并打包 → 右侧「已生成的包」里下载，
-   文件名如 `nginx_1.27.3_linux-amd64.tar.gz`，同时追加到 `output/SHA256SUMS`。
+   文件名如 `nginx_1.27.3_linux-amd64.tar.gz`，同时追加到输出目录的 `SHA256SUMS`。
 5. **批量**：把多行镜像（`nginx:1.27.3` 每行一个）粘进批量框，或填 `docker-compose.yml`
    路径点「读取 compose 里的镜像」，再「按当前平台全部入队」。
 
@@ -55,7 +55,7 @@ static/ 下的文件每次请求都重新读取，**改 HTML/CSS/JS 不需要重
   （HTTP Range），不会重下已完成的字节；tag 不存在、无权限（404/403）会立刻失败、不做无谓重试。
 - **取消**：排队中或运行中的任务都有「取消」按钮，任务区标题还有「全部取消」。排队中的立即移除；
   运行中的会在下一个检查点中断（层与层之间、下载读循环、解压循环都会检查），半成品 tar 会被删掉，
-  output/ 与 SHA256SUMS 不留垃圾。取消时直接掐掉底层 socket，卡住的下载也能秒停。
+  输出目录 与 SHA256SUMS 不留垃圾。取消时直接掐掉底层 socket，卡住的下载也能秒停。
 
 ## 设置（存在 config.json，界面里改完自动保存）
 
@@ -63,19 +63,21 @@ static/ 下的文件每次请求都重新读取，**改 HTML/CSS/JS 不需要重
   切换立即生效，顶部会一直显示当前拉取源，不会再出现「以为切了官方结果还是镜像站」。
 - **换源范围**：只给 Docker Hub 镜像换源（第三方 registry 保持原样）/ 全部走该地址。
 - **搜索 / 标签 API 地址**：默认 `https://hub.docker.com`。搜索只对 Docker Hub 有效。
-- **HTTP 代理 + 代理用在哪**：默认「自动」= Docker Hub 域名走代理，镜像站/ghcr 直连，
+- **代理**：三种模式——「不使用」直连 /「系统代理」读系统与 `http_proxy`/`https_proxy` 环境变量
+  /「自定义」分别填 HTTP、HTTPS、SOCKS5 代理（填了 SOCKS5 则全部走 SOCKS5，支持 `socks5://user:pass@host:port`）。
+- **代理范围**：默认「自动」= Docker Hub 域名走代理，镜像站/ghcr 直连，
   直连失败再回退代理。**重要**：镜像站只服务国内 IP，走代理访问会 404，别设成「全部走代理」。
 - **私有仓库用户名/密码**：Basic + Bearer token，Harbor 一类私有库用得上。
 - **跳过 TLS 校验**：自建 registry 自签证书时用。
-- **默认平台 / 压缩 / 输出目录**：默认 `linux/amd64`、`tar.gz`、`./output`。
+- **默认平台 / 压缩 / 输出目录**：默认 `linux/amd64`、`tar.gz`，导出到各系统「下载」文件夹下的 `docker-images`（macOS/Linux 即 `~/Downloads/docker-images`，Windows 自动定位「下载」）。
   导出格式固定为 `docker-archive`（老 docker / podman / containerd 都能 load）。
 
 ## 拷贝到另一台机器（比如 Windows）
 
-只拷 `app.py`、`imgfetch.py` 两个文件就够（`config.json`、`output/` 会自动生成）。
+只拷 `app.py`、`imgfetch.py` 两个文件就够（`config.json` 会自动生成；输出目录默认各系统「下载」下的 `docker-images`）。
 
 - **别直接拷 `config.json`**：里面的代理是原机器的地址（如 `127.0.0.1:18080`），
-  在新机器上不存在。删掉让它重新自动探测，或在新机器界面上改。
+  在新机器上不存在。删掉它或在新机器界面上改成「系统代理 / 自定义」。
 - Windows 上如果搜索一直转圈/失败：检查「搜索 API 地址」能不能访问（Docker Hub 国内需要代理），
   拉取镜像本身走镜像站不需要代理。
 
